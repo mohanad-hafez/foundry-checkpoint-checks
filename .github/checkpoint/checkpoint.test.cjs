@@ -1,0 +1,10 @@
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const { prepare } = require("./checkpoint.cjs");
+const before = "cb8bb6fdeee90d47c6ffe943ddfc02d3c2af0689\n";
+const after = "fddee8a3c2fed38b3747b887482fe5bb2f0d920e";
+test("actual original before and source head produce exact observed bytes", () => assert.deepEqual(prepare(before, before, after), { status: "update", content: after + "\n" }));
+test("a concurrent checkpoint change stops publication", () => assert.throws(() => prepare(after + "\n", before, after), /changed/));
+test("already processed revision needs no new update", () => assert.equal(prepare(after + "\n", after + "\n", after).status, "noop"));
+test("arbitrary source text cannot become a checkpoint", () => assert.throws(() => prepare(before, before, "main; anything"), /Invalid/));
+test("extra checkpoint content is rejected", () => assert.throws(() => prepare(before + "extra", before, after), /Invalid/));

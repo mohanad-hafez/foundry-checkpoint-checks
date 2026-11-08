@@ -1,0 +1,69 @@
+name: Documentation checkpoint
+on:
+  push:
+    branches: [replacement-doc-checkpoint-01]
+    paths: [.github/checkpoint-ready]
+permissions:
+  contents: read
+jobs:
+  checkpoint:
+    if: github.repository == 'mohanad-hafez/foundry-checkpoint-checks'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: node --test .github/checkpoint/checkpoint.test.cjs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: nicholasdbrady/foundry-docs
+          ref: fddee8a3c2fed38b3747b887482fe5bb2f0d920e
+          path: native-source
+          sparse-checkout: README.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const fs=require('fs'),cp=require('child_process');const {prepare}=require(process.env.GITHUB_WORKSPACE+'/.github/checkpoint/checkpoint.cjs');
+            const head=cp.execFileSync('git',['-C','native-source','rev-parse','HEAD'],{encoding:'utf8'}).trim();if(head!=='fddee8a3c2fed38b3747b887482fe5bb2f0d920e')throw Error('Source revision changed');
+            const branch=await github.rest.repos.getBranch({...context.repo,branch:'replacement-checkpoint-memory-01'});if(branch.data.commit.sha!=='7acc09aaa732d0e804ff9779bd08c71aa909d794')throw Error('Memory head changed');
+            const old=await github.rest.repos.getContent({...context.repo,path:'post-sync-last-sha.txt',ref:'7acc09aaa732d0e804ff9779bd08c71aa909d794'});
+            const previous=Buffer.from(old.data.content,'base64').toString();const result=prepare(previous,"cb8bb6fdeee90d47c6ffe943ddfc02d3c2af0689\n",head);if(result.status!=='update')throw Error('Unexpected no-op');
+            fs.mkdirSync('.checkpoint-cache',{recursive:true});fs.writeFileSync('.checkpoint-cache/post-sync-last-sha.txt',result.content);
+            fs.writeFileSync('checkpoint-result.json',JSON.stringify({source_head:head,before:previous,after:result.content,status:'prepared',model_calls:0},null,2));
+            const tree=await github.rest.git.createTree({...context.repo,base_tree:'7acc09aaa732d0e804ff9779bd08c71aa909d794',tree:[{path:'post-sync-last-sha.txt',mode:'100644',type:'blob',content:result.content}]});if(tree.data.sha!=='d16dd9f290bacd446d0da2fb2eb7a75e13c271b4')throw Error('Result differs from observed original tree');
+            const commit=await github.rest.git.createCommit({...context.repo,message:'Record processed documentation revision',tree:tree.data.sha,parents:['7acc09aaa732d0e804ff9779bd08c71aa909d794']});
+            fs.writeFileSync('checkpoint-result.json',JSON.stringify({source_head:head,before:previous,after:result.content,status:'ref_update_attempt',commit:commit.data.sha,tree:tree.data.sha,model_calls:0},null,2));
+            await github.rest.git.updateRef({...context.repo,ref:'heads/replacement-checkpoint-memory-01',sha:commit.data.sha,force:false});
+            fs.writeFileSync('checkpoint-result.json',JSON.stringify({source_head:head,before:previous,after:result.content,status:'durable_ref_confirmed',commit:commit.data.sha,tree:tree.data.sha,model_calls:0},null,2));
+      - name: Save checkpoint cache
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: .checkpoint-cache
+          key: checkpoint-case-01-${{ github.run_id }}
+      - name: Hold local copy before restoration
+        run: mv .checkpoint-cache/post-sync-last-sha.txt checkpoint-held.txt
+      - name: Restore checkpoint cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: .checkpoint-cache
+          key: checkpoint-case-01-${{ github.run_id }}
+          fail-on-cache-miss: true
+      - name: Verify restored bytes
+        run: |
+          cmp checkpoint-held.txt .checkpoint-cache/post-sync-last-sha.txt
+          node -e "const fs=require('fs');const r=JSON.parse(fs.readFileSync('checkpoint-result.json'));r.cache_restored=true;fs.writeFileSync('checkpoint-result.json',JSON.stringify(r,null,2));"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: checkpoint-result
+          path: |
+            checkpoint-result.json
+            checkpoint-held.txt
+            .checkpoint-cache/post-sync-last-sha.txt
+          include-hidden-files: true
+          retention-days: 14
